@@ -271,8 +271,9 @@
         <option value="demo">Demo mode — no API key</option>
         <option value="openai">OpenAI (GPT-4o-mini)</option>
         <option value="minimax">MiniMax (M2.7)</option>
+        <option value="anthropic">Anthropic Claude (Haiku 5.5)</option>
       </select>
-      <input type="password" id="apiKey" placeholder="sk-..." autocomplete="off">
+      <input type="password" id="apiKey" placeholder="Paste your API key" autocomplete="off">
       <button class="primary" id="saveKeyBtn">Save key</button>
       <button class="warn" id="clearKeyBtn">Clear key</button>
     </div>
@@ -373,9 +374,12 @@
   var PROVIDERS = {
     demo:    { demo: true, host: "local demo" },
     openai:  { url: "https://api.openai.com/v1/chat/completions", model: "gpt-4o-mini", host: "api.openai.com" },
-    minimax: { url: "https://api.minimax.io/v1/chat/completions", model: "MiniMax-M2.7", host: "api.minimax.io" }
+    minimax: { url: "https://api.minimax.io/v1/chat/completions", model: "MiniMax-M2.7", host: "api.minimax.io" },
+    // Anthropic Messages API, called straight from the browser with the learner's own key (no backend).
+    anthropic: { url: "https://api.anthropic.com/v1/messages", model: "claude-haiku-5-5", host: "api.anthropic.com", anthropic: true }
   };
-  var KEY_STORAGE = "rp_openai_key";
+  var KEY_STORAGE = "rp_openai_key";   // OpenAI keeps the original slot; other providers get their own (rp_openai_key_<provider>)
+  function keySlot(p) { return p === "openai" ? KEY_STORAGE : KEY_STORAGE + "_" + p; }
   var PROVIDER_STORAGE = "rp_provider";
 
   // ---------- Scenario definitions (hidden system prompts) ----------
@@ -468,7 +472,7 @@
 
   // ---------- API key handling ----------
   function getKey() {
-    try { return sessionStorage.getItem(KEY_STORAGE) || ""; } catch (e) { return ""; }
+    try { return sessionStorage.getItem(keySlot(getProvider())) || ""; } catch (e) { return ""; }
   }
   function refreshKeyStatus() {
     var k = getKey();
@@ -483,17 +487,18 @@
   saveKeyBtn.addEventListener("click", function () {
     var v = apiKeyInput.value.trim();
     if (!v) { alert("Please paste your API key first."); return; }
-    try { sessionStorage.setItem(KEY_STORAGE, v); } catch (e) {}
+    try { sessionStorage.setItem(keySlot(getProvider()), v); } catch (e) {}
     apiKeyInput.value = "";
     refreshKeyStatus();
   });
   clearKeyBtn.addEventListener("click", function () {
-    try { sessionStorage.removeItem(KEY_STORAGE); } catch (e) {}
+    try { sessionStorage.removeItem(keySlot(getProvider())); } catch (e) {}
     refreshKeyStatus();
   });
   providerSelect.addEventListener("change", function () {
     try { localStorage.setItem(PROVIDER_STORAGE, providerSelect.value); } catch (e) {}
     refreshProviderUI();
+    refreshKeyStatus();
   });
 
   // ---------- Chat rendering ----------
@@ -628,6 +633,7 @@
       onErr("Please save your API key for the selected provider in the Settings section first.");
       return;
     }
+    if (prov.anthropic) { callAnthropic(prov, key, messages, onOk, onErr); return; }
     fetch(prov.url, {
       method: "POST",
       headers: {
@@ -646,6 +652,44 @@
         var text = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
         if (!text) { onErr("The AI service returned an empty response. Please try again."); return; }
         onOk(text.trim());
+      });
+    }).catch(function () {
+      onErr("Could not reach " + prov.host + ". Check your internet connection and try again.");
+    });
+  }
+
+  // Anthropic Messages API: the system prompt is a top-level field, and the conversation must start with a
+  // user turn, so the staff member's opening line is preceded by a short stage direction.
+  function callAnthropic(prov, key, messages, onOk, onErr) {
+    var system = messages.filter(function (m) { return m.role === "system"; }).map(function (m) { return m.content; }).join("\n\n");
+    var turns = messages.filter(function (m) { return m.role !== "system"; })
+                        .map(function (m) { return { role: m.role, content: m.content }; });
+    if (turns.length && turns[0].role === "assistant") {
+      turns.unshift({ role: "user", content: "(The manager has asked you in for a one-to-one conversation.)" });
+    }
+    fetch(prov.url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": key,
+        "anthropic-version": "2026-10-21",
+        "anthropic-dangerous-direct-browser-access": "true"
+      },
+      body: JSON.stringify({
+        model: prov.model,
+        max_tokens: 16000,
+        system: system,
+        output_config: { effort: "low" },
+        messages: turns
+      })
+    }).then(function (res) {
+      return res.json().catch(function () { return {}; }).then(function (data) {
+        if (!res.ok) { onErr(friendlyError(res.status, data)); return; }
+        if (data.stop_reason === "refusal") { onErr("Claude declined this request. Rephrase your message and try again."); return; }
+        var text = (data.content || []).filter(function (b) { return b.type === "text"; })
+                                        .map(function (b) { return b.text; }).join("").trim();
+        if (!text) { onErr("The AI service returned an empty response. Please try again."); return; }
+        onOk(text);
       });
     }).catch(function () {
       onErr("Could not reach " + prov.host + ". Check your internet connection and try again.");

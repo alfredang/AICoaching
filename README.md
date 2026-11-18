@@ -37,7 +37,7 @@ The coaching pattern is simple:
 ## How the simulator works
 
 - **Demo mode:** works immediately in the browser with a local coaching script and no external API calls.
-- **AI modes:** optional OpenAI and MiniMax conversations using a user-supplied training key.
+- **AI modes:** optional OpenAI, MiniMax or **Anthropic Claude (Haiku 5.5, `claude-haiku-5-5`)** conversations using a user-supplied training key. Each provider keeps its own key slot, so you can save an Anthropic key alongside an OpenAI one. Claude is called straight from the browser (Messages API, `anthropic-dangerous-direct-browser-access` header); there is no backend.
 - **Feedback:** scores the manager's turns against Goal, Reality, Options, Will, Empathy, and Job-redesign concreteness.
 - **Responsive:** designed for desktop, tablet and phone workshops.
 
